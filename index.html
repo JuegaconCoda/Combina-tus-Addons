@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Combinador de Addons Minecraft Pro</title>
+    <title>Combinador de Addons Minecraft Pro - Juega con Coda</title>
     <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
@@ -35,10 +35,56 @@
             --switch-bg: #1e272e; --switch-knob: #34495e;
         }
         * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        body { background: var(--body-bg); color: var(--text-primary); margin: 0; padding: 20px; min-height: 100vh; }
+        body { background: var(--body-bg); color: var(--text-primary); margin: 0; padding: 20px; min-height: 100vh; overflow-x: hidden; }
         
+        /* --- Pantalla de Carga Animada --- */
+        #loading-screen {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: var(--bg-primary); z-index: 9999;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            transition: opacity 0.6s ease-out, visibility 0.6s;
+        }
+        /* Logo de Carga Adaptativo */
+        .loader-logo {
+            width: clamp(180px, 30vmin, 400px); 
+            height: clamp(180px, 30vmin, 400px);
+            object-fit: contain;
+            animation: spinLogo 2s linear infinite;
+            border-radius: 25px;
+            box-shadow: 0 0 30px rgba(0,0,0,0.3);
+        }
+        .loader-text {
+            margin-top: 30px; font-size: clamp(1.2rem, 3vw, 2rem); font-weight: bold; color: var(--text-secondary);
+            animation: pulseText 1.5s ease-in-out infinite;
+        }
+        @keyframes spinLogo { 100% { transform: rotate(360deg); } }
+        @keyframes pulseText { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+
+        /* --- Botón de YouTube Flotante --- */
+        .yt-floating-btn {
+            position: fixed; bottom: 20px; left: 20px; z-index: 1000;
+            background: #FF0000; color: white; text-decoration: none;
+            padding: 12px 20px; border-radius: 50px; font-weight: bold; font-size: 1rem;
+            display: flex; align-items: center; gap: 10px;
+            box-shadow: 0 4px 15px rgba(255, 0, 0, 0.4);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .yt-floating-btn:hover { transform: translateY(-3px) scale(1.05); box-shadow: 0 6px 20px rgba(255, 0, 0, 0.6); }
+        .yt-floating-btn svg { width: 24px; height: 24px; fill: currentColor; }
+
         .container { width: 95%; max-width: 1800px; margin: 0 auto; background: var(--bg-primary); border-radius: 15px; box-shadow: var(--box-shadow); padding: 30px; position: relative; }
-        h1 { text-align: center; color: var(--text-secondary); margin-bottom: 20px; font-size: 2.5rem; font-weight: 300; }
+        
+        /* --- Logo del Encabezado Adaptativo --- */
+        .main-header { display: flex; align-items: center; justify-content: center; gap: 20px; margin-bottom: 20px; }
+        .main-header-logo { 
+            width: clamp(80px, 8vw, 140px); 
+            height: clamp(80px, 8vw, 140px); 
+            object-fit: contain;
+            border-radius: 16px; 
+            box-shadow: 0 4px 15px var(--shadow-color); 
+        }
+        h1 { margin: 0; color: var(--text-secondary); font-size: clamp(1.8rem, 4vw, 3rem); font-weight: 300; }
+        
         .theme-toggle { position: absolute; top: 20px; right: 20px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 30px; padding: 10px 15px; cursor: pointer; z-index: 1000; font-size: 0.9rem; }
         
         /* Botón BETA */
@@ -168,10 +214,13 @@
         .btn-cancel { background: var(--bg-tertiary); color: var(--text-primary); border: none; padding: 12px 25px; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 1rem; }
         .btn-cancel:hover { background: var(--border-primary); }
 
+        /* --- Ajustes Adaptativos para Móviles --- */
         @media (max-width: 992px) {
             body { padding: 10px; }
             .container { width: 100%; padding: 20px 15px; border-radius: 10px; }
-            h1 { font-size: 1.8rem; margin-top: 40px; margin-bottom: 20px; }
+            .main-header { flex-direction: column; gap: 10px; }
+            .main-header-logo { width: clamp(100px, 25vw, 150px); height: clamp(100px, 25vw, 150px); }
+            h1 { text-align: center; margin-top: 10px; margin-bottom: 20px; }
             .theme-toggle { top: 15px; right: 15px; padding: 8px 12px; font-size: 0.8rem; }
             .main-layout { grid-template-columns: 1fr; gap: 15px; }
             .upload-section { padding: 20px 15px; }
@@ -191,6 +240,8 @@
             .modal-content h3 { font-size: 1.2rem; }
             .modal-actions { flex-direction: column; width: 100%; }
             .modal-actions button { width: 100%; padding: 12px; }
+            .yt-floating-btn { font-size: 0.9rem; padding: 10px 15px; }
+            .yt-floating-btn span { display: none; } /* Ocultar texto en móviles para no tapar contenido */
         }
         
         @media (max-width: 480px) {
@@ -202,9 +253,26 @@
     </style>
 </head>
 <body>
+    
+    <div id="loading-screen">
+        <img src="Combina Addons.png" class="loader-logo" alt="Logo Cargando">
+        <div class="loader-text">Iniciando Motor de Fusión...</div>
+    </div>
+
+    <a href="https://www.youtube.com/@JuegaconCoda" target="_blank" class="yt-floating-btn" title="Visitar Juega con Coda en YouTube">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M21.582,6.186c-0.23-0.86-0.908-1.538-1.768-1.768C18.254,4,12,4,12,4S5.746,4,4.186,4.418 c-0.86,0.23-1.538,0.908-1.768,1.768C2,7.746,2,12,2,12s0,4.254,0.418,5.814c0.23,0.86,0.908,1.538,1.768,1.768 C5.746,20,12,20,12,20s6.254,0,7.814-0.418c0.86-0.23,1.538-0.908,1.768-1.768C22,16.254,22,12,22,12S22,7.746,21.582,6.186z M10,15.464V8.536L16,12L10,15.464z"/>
+        </svg>
+        <span>Juega con Coda</span>
+    </a>
+
     <button class="theme-toggle" id="themeToggle">🌙 Tema</button>
     <div class="container">
-        <h1>Combinador de Addons Minecraft Pro</h1>
+        
+        <div class="main-header">
+            <img src="Combina Addons.png" class="main-header-logo" alt="Logo de la Herramienta">
+            <h1>Combinador de Addons Minecraft Pro</h1>
+        </div>
         
         <div class="beta-toggle-container">
             <button id="betaToggleBtn" class="beta-btn">🧪 Activar BETA (Fusión Completa)</button>
@@ -334,9 +402,20 @@
     <div class="notification" id="notification"></div>
     
     <script>
+        // Lógica de la Pantalla de Carga
+        window.addEventListener('load', () => {
+            const loader = document.getElementById('loading-screen');
+            setTimeout(() => {
+                loader.style.opacity = '0';
+                setTimeout(() => {
+                    loader.style.visibility = 'hidden';
+                }, 600); 
+            }, 1000); 
+        });
+
         document.addEventListener('DOMContentLoaded', () => {
 
-            // NUEVO: Lógica del Botón y Modal BETA
+            // Lógica del Botón y Modal BETA
             const betaToggleBtn = document.getElementById('betaToggleBtn');
             const betaWarningModal = document.getElementById('betaWarningModal');
             const cancelBetaBtn = document.getElementById('cancelBetaBtn');
@@ -353,13 +432,11 @@
                 if (!isBetaActive) {
                     betaWarningModal.classList.add('active');
                 } else {
-                    // Desactivar BETA
                     isBetaActive = false;
                     betaToggleBtn.innerHTML = '🧪 Activar BETA (Fusión Completa)';
                     betaToggleBtn.style.background = 'var(--btn-danger-bg)';
                     btnFullMode.style.display = 'none';
                     
-                    // Volver al modo precisión automáticamente si estaba en modo completo
                     btnPrecisionMode.click();
                     showNotification('Modo BETA desactivado.', 'info');
                 }
@@ -373,14 +450,10 @@
                 betaWarningModal.classList.remove('active');
                 isBetaActive = true;
                 
-                // Cambiar el aspecto del botón toggle
                 betaToggleBtn.innerHTML = '✅ Desactivar BETA (Fusión Completa)';
                 betaToggleBtn.style.background = 'var(--btn-success-bg)';
                 
-                // Mostrar el botón de la pestaña
                 btnFullMode.style.display = 'inline-block';
-                
-                // Navegar automáticamente a la nueva pestaña
                 btnFullMode.click();
                 showNotification('Modo de Fusión Completa habilitado.', 'success');
             });
