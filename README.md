@@ -1,0 +1,1 @@
+Este es un Combinar de Addons hecho casi en su totalidad por AI, es un proyecto simple, para unir addons de Minecraft Bedrock y asi arreglar incompatibilidades, el hacer este proyecto me ha llevado muchas horas asi que espero que le den un buen uso, mi red social principal es: https://www.youtube.com/@JuegaconCoda por si me quieren apoyar por ahi, un saludo grande.... Coda_
