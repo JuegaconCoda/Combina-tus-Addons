@@ -44,7 +44,6 @@
             display: flex; flex-direction: column; justify-content: center; align-items: center;
             transition: opacity 0.6s ease-out, visibility 0.6s;
         }
-        /* Logo de Carga Adaptativo */
         .loader-logo {
             width: clamp(180px, 30vmin, 400px); 
             height: clamp(180px, 30vmin, 400px);
@@ -241,7 +240,7 @@
             .modal-actions { flex-direction: column; width: 100%; }
             .modal-actions button { width: 100%; padding: 12px; }
             .yt-floating-btn { font-size: 0.9rem; padding: 10px 15px; }
-            .yt-floating-btn span { display: none; } /* Ocultar texto en móviles para no tapar contenido */
+            .yt-floating-btn span { display: none; }
         }
         
         @media (max-width: 480px) {
@@ -255,7 +254,7 @@
 <body>
     
     <div id="loading-screen">
-        <img src="Combina Addons.png" class="loader-logo" alt="Logo Cargando">
+        <img src="logo.png" class="loader-logo" alt="Logo Cargando" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'100\' height=\'100\'><rect width=\'100\' height=\'100\' fill=\'%23ccc\'/><text x=\'50\' y=\'50\' font-family=\'Arial\' font-size=\'14\' fill=\'%23333\' text-anchor=\'middle\' dominant-baseline=\'middle\'>Sin Logo</text></svg>'">
         <div class="loader-text">Iniciando Motor de Fusión...</div>
     </div>
 
@@ -270,7 +269,7 @@
     <div class="container">
         
         <div class="main-header">
-            <img src="Combina Addons.png" class="main-header-logo" alt="Logo de la Herramienta">
+            <img src="logo.png" class="main-header-logo" alt="Logo de la Herramienta" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'100\' height=\'100\'><rect width=\'100\' height=\'100\' fill=\'%23ccc\'/><text x=\'50\' y=\'50\' font-family=\'Arial\' font-size=\'14\' fill=\'%23333\' text-anchor=\'middle\' dominant-baseline=\'middle\'>Sin Logo</text></svg>'">
             <h1>Combinador de Addons Minecraft Pro</h1>
         </div>
         
