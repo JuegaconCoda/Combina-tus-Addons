@@ -7,6 +7,7 @@
     <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
+        /* --- VARIABLES DE TEMAS --- */
         :root {
             --bg-primary: #ffffff; --bg-secondary: #f8f9fa; --bg-tertiary: #e9ecef; --bg-quaternary: #e8f8f5;
             --text-primary: #212529; --text-secondary: #495057; --text-tertiary: #6c757d;
@@ -24,6 +25,7 @@
             --body-bg: linear-gradient(135deg, #f5f7fa, #c3cfe2);
             --switch-bg: #e9ecef; --switch-knob: white; --switch-active-bg: var(--border-info);
         }
+        
         [data-theme="dark"] {
             --bg-primary: #2c3e50; --bg-secondary: #34495e; --bg-tertiary: #4a6fa5; --bg-quaternary: #1e4b43;
             --text-primary: #ecf0f1; --text-secondary: #bdc3c7; --text-tertiary: #95a5a6;
@@ -34,8 +36,21 @@
             --body-bg: linear-gradient(135deg, #1e272e, #2c3e50);
             --switch-bg: #1e272e; --switch-knob: #34495e;
         }
+
+        /* NUEVO: TEMA AMOLED (Negros puros) */
+        [data-theme="amoled"] {
+            --bg-primary: #000000; --bg-secondary: #0a0a0a; --bg-tertiary: #141414; --bg-quaternary: #111111;
+            --text-primary: #ffffff; --text-secondary: #d1d1d1; --text-tertiary: #888888;
+            --border-primary: #222222; --border-accent: #3498db; --border-success: #2ecc71;
+            --border-info: #9b59b6; --border-error: #e74c3c; --panel-bg: #050505;
+            --shadow-color: rgba(255, 255, 255, 0.02);
+            --highlight-change-bg: rgba(243, 156, 18, 0.3);
+            --body-bg: #000000; /* Fondo totalmente negro, sin degradados */
+            --switch-bg: #222222; --switch-knob: #555555;
+        }
+
         * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        body { background: var(--body-bg); color: var(--text-primary); margin: 0; padding: 20px; min-height: 100vh; overflow-x: hidden; }
+        body { background: var(--body-bg); color: var(--text-primary); margin: 0; padding: 20px; min-height: 100vh; overflow-x: hidden; transition: background 0.3s, color 0.3s; }
         
         #loading-screen {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
@@ -62,13 +77,19 @@
         .yt-floating-btn:hover { transform: translateY(-3px) scale(1.05); box-shadow: 0 6px 20px rgba(255, 0, 0, 0.6); }
         .yt-floating-btn svg { width: 24px; height: 24px; fill: currentColor; }
 
-        .container { width: 95%; max-width: 1800px; margin: 0 auto; background: var(--bg-primary); border-radius: 15px; box-shadow: var(--box-shadow); padding: 30px; position: relative; }
+        .container { width: 95%; max-width: 1800px; margin: 0 auto; background: var(--bg-primary); border-radius: 15px; box-shadow: var(--box-shadow); padding: 30px; position: relative; transition: background 0.3s; }
         
         .main-header { display: flex; align-items: center; justify-content: center; gap: 20px; margin-bottom: 20px; }
         .main-header-logo { width: clamp(80px, 8vw, 140px); height: clamp(80px, 8vw, 140px); object-fit: contain; border-radius: 16px; box-shadow: 0 4px 15px var(--shadow-color); }
         h1 { margin: 0; color: var(--text-secondary); font-size: clamp(1.8rem, 4vw, 3rem); font-weight: 300; }
         
-        .theme-toggle { position: absolute; top: 20px; right: 20px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 30px; padding: 10px 15px; cursor: pointer; z-index: 1000; font-size: 0.9rem; }
+        /* Botón de Temas Mejorado */
+        .theme-toggle { 
+            position: absolute; top: 20px; right: 20px; background: var(--bg-secondary); color: var(--text-primary); 
+            border: 1px solid var(--border-primary); border-radius: 30px; padding: 10px 20px; cursor: pointer; 
+            z-index: 1000; font-size: 1rem; font-weight: bold; transition: all 0.3s; box-shadow: 0 2px 5px var(--shadow-color);
+        }
+        .theme-toggle:hover { transform: translateY(-2px); border-color: var(--border-accent); }
         
         .beta-toggle-container { text-align: center; margin-bottom: 15px; }
         .beta-btn { background: var(--btn-danger-bg); color: white; border: none; padding: 8px 20px; border-radius: 50px; cursor: pointer; font-size: 0.9rem; font-weight: bold; transition: all 0.3s; box-shadow: 0 2px 10px rgba(231, 76, 60, 0.4); }
@@ -248,7 +269,8 @@
         <span>Juega con Coda</span>
     </a>
 
-    <button class="theme-toggle" id="themeToggle">🌙 Tema</button>
+    <button class="theme-toggle" id="themeToggle">☀️ Tema</button>
+    
     <div class="container">
         
         <div class="main-header">
@@ -384,7 +406,6 @@
     <div class="notification" id="notification"></div>
     
     <script>
-        // Lógica de la Pantalla de Carga
         window.addEventListener('load', () => {
             const loader = document.getElementById('loading-screen');
             setTimeout(() => {
@@ -396,6 +417,28 @@
         });
 
         document.addEventListener('DOMContentLoaded', () => {
+
+            // NUEVA LÓGICA DE TEMAS (3 ESTADOS)
+            const themeToggle = document.getElementById('themeToggle');
+            const themes = ['light', 'dark', 'amoled'];
+            const themeIcons = { 'light': '☀️ Tema Claro', 'dark': '🌙 Tema Oscuro', 'amoled': '🌌 Tema AMOLED' };
+
+            const applyTheme = (theme) => {
+                if (!themes.includes(theme)) theme = 'light';
+                document.documentElement.setAttribute('data-theme', theme);
+                localStorage.setItem('theme', theme);
+                themeToggle.innerHTML = themeIcons[theme];
+            };
+
+            themeToggle.addEventListener('click', () => {
+                let currentTheme = document.documentElement.getAttribute('data-theme');
+                let nextIndex = (themes.indexOf(currentTheme) + 1) % themes.length;
+                applyTheme(themes[nextIndex]);
+            });
+
+            // Inicializar tema guardado o claro por defecto
+            applyTheme(localStorage.getItem('theme') || 'light');
+
 
             // Lógica del Botón y Modal BETA
             const betaToggleBtn = document.getElementById('betaToggleBtn');
@@ -440,7 +483,6 @@
                 showNotification('Modo de Fusión Completa habilitado.', 'success');
             });
 
-            // Lógica de cambio de pestañas
             btnPrecisionMode.addEventListener('click', () => {
                 btnPrecisionMode.classList.add('active');
                 btnFullMode.classList.remove('active');
@@ -511,15 +553,6 @@
             let baseArchiveFile = null; 
             let addonModifications = {}; 
 
-            const themeToggle = document.getElementById('themeToggle');
-            const applyTheme = (theme) => {
-                document.documentElement.setAttribute('data-theme', theme);
-                localStorage.setItem('theme', theme);
-                themeToggle.innerHTML = theme === 'dark' ? '☀️ Tema' : '🌙 Tema';
-            };
-            themeToggle.addEventListener('click', () => applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
-            applyTheme(localStorage.getItem('theme') || 'light');
-
             const setupDragDrop = (section, fileInput, handler) => {
                 const dropZone = section;
                 ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(e => dropZone.addEventListener(e, p => { p.preventDefault(); p.stopPropagation(); }));
@@ -553,7 +586,6 @@
                     baseArchiveFile = null;
                 }
                 
-                // GC agresivo para liberar memoria
                 if (fullMergeState[type]) {
                     fullMergeState[type].file = null;
                     fullMergeState[type].zip = null;
@@ -604,11 +636,11 @@
                     const mainZip = new JSZip();
                     await mainZip.loadAsync(file);
                     let allJsonFiles = {};
-                    let yieldCounter = 0; // Anti-Freeze variable
+                    let yieldCounter = 0; 
 
                     async function processZip(zip, prefix = '') {
                         for (const relativePath in zip.files) {
-                            if (++yieldCounter % 50 === 0) await new Promise(r => setTimeout(r, 0)); // Evitar colapso
+                            if (++yieldCounter % 50 === 0) await new Promise(r => setTimeout(r, 0)); 
                             
                             const zipEntry = zip.files[relativePath];
                             if (zipEntry.dir) continue;
@@ -621,7 +653,7 @@
                                     let nestedZipData = await zipEntry.async("blob");
                                     const nestedZip = new JSZip();
                                     await nestedZip.loadAsync(nestedZipData);
-                                    nestedZipData = null; // GC agresivo
+                                    nestedZipData = null; 
                                     await processZip(nestedZip, fullPath);
                                 } catch (nestedErr) {}
                             }
@@ -740,7 +772,6 @@
             const smartMergeCustomizer = (objValue, srcValue, key) => {
                 if (_.isArray(objValue) && _.isArray(srcValue)) {
                     
-                    // PREVENCIÓN LANG CORRUPTOS: Evitar multiplicar las líneas de comentarios infinitamente
                     if (key === '_lines') {
                         return _.uniq(objValue.concat(srcValue));
                     }
@@ -811,7 +842,7 @@
                 let yieldCounter = 0;
 
                 for (const checkbox of checkboxes) {
-                    if (++yieldCounter % 20 === 0) await new Promise(r => setTimeout(r, 0)); // Evitar cuelgue en masa
+                    if (++yieldCounter % 20 === 0) await new Promise(r => setTimeout(r, 0)); 
                     const index = parseInt(checkbox.dataset.index);
                     const pair = currentBatchPairs[index];
 
@@ -1552,7 +1583,7 @@
                     fullMergeState[type].bpPath = null;
                     fullMergeState[type].rpPath = null;
 
-                    let yieldCounter = 0; // Anti-freeze
+                    let yieldCounter = 0; 
 
                     async function scanForManifests(currentZip, prefix = '') {
                         let manifests = [];
@@ -1573,7 +1604,7 @@
                                     let nestedZipData = await zipEntry.async("blob");
                                     const nestedZip = new JSZip();
                                     await nestedZip.loadAsync(nestedZipData);
-                                    nestedZipData = null; // GC
+                                    nestedZipData = null; 
                                     const nestedManifests = await scanForManifests(nestedZip, fullPath);
                                     manifests = manifests.concat(nestedManifests);
                                 } catch (nestedErr) {}
@@ -1662,11 +1693,11 @@
                 });
             }
 
-            let globalYieldCounter = 0; // Variable global para el yield anti-freeze
+            let globalYieldCounter = 0; 
 
             async function transferirZipPlano(sourceZip, targetZip, prefix = '') {
                 for (const relativePath in sourceZip.files) {
-                    if (++globalYieldCounter % 100 === 0) await new Promise(r => setTimeout(r, 0)); // Evita crasheo visual
+                    if (++globalYieldCounter % 100 === 0) await new Promise(r => setTimeout(r, 0)); 
                     
                     const zipEntry = sourceZip.files[relativePath];
                     if (zipEntry.dir) continue;
@@ -1676,7 +1707,7 @@
                         let nestedZipData = await zipEntry.async("blob");
                         const nestedZip = new JSZip();
                         await nestedZip.loadAsync(nestedZipData);
-                        nestedZipData = null; // GC
+                        nestedZipData = null; 
                         await transferirZipPlano(nestedZip, targetZip, fullPath);
                     } else {
                         const content = await zipEntry.async("uint8array");
@@ -1687,7 +1718,7 @@
 
             async function inyectarAddon(sourceZip, targetZip, prefix = '') {
                 for (const relativePath in sourceZip.files) {
-                    if (++globalYieldCounter % 100 === 0) await new Promise(r => setTimeout(r, 0)); // Evita crasheo visual
+                    if (++globalYieldCounter % 100 === 0) await new Promise(r => setTimeout(r, 0)); 
                     
                     const zipEntry = sourceZip.files[relativePath];
                     if (zipEntry.dir) continue;
@@ -1697,7 +1728,7 @@
                         let nestedZipData = await zipEntry.async("blob");
                         const nestedZip = new JSZip();
                         await nestedZip.loadAsync(nestedZipData);
-                        nestedZipData = null; // GC
+                        nestedZipData = null; 
                         await inyectarAddon(nestedZip, targetZip, fullPath);
                     } else {
                         let destPath = null;
@@ -1745,7 +1776,7 @@
                 btnExecuteFullMerge.textContent = "⏳ Procesando en segundo plano... (No cierres la pestaña)";
                 btnExecuteFullMerge.style.pointerEvents = "none";
                 showNotification("Extrayendo, fusionando y comprimiendo...", "info");
-                globalYieldCounter = 0; // Reset counter
+                globalYieldCounter = 0; 
 
                 try {
                     const finalZip = new JSZip();
@@ -1756,7 +1787,6 @@
                     let nuevoRpUuid = null;
                     let viejoRpUuid = null;
 
-                    // Paracaídas de seguridad para Manifest RP
                     if (fullMergeState.base.rpPath !== null) {
                         const rpManifestPath = fullMergeState.base.rpPath + "manifest.json";
                         const rpFile = finalZip.file(rpManifestPath);
@@ -1765,7 +1795,7 @@
                                 const rpStr = await rpFile.async("string");
                                 const rpObj = parseContent(rpStr, "manifest.json");
                                 
-                                if (!rpObj.header) rpObj.header = {}; // Paracaídas
+                                if (!rpObj.header) rpObj.header = {}; 
                                 viejoRpUuid = rpObj.header.uuid || generarUUID(); 
                                 nuevoRpUuid = generarUUID();
                                 rpObj.header.uuid = nuevoRpUuid;
@@ -1778,7 +1808,6 @@
                         }
                     }
 
-                    // Paracaídas de seguridad para Manifest BP
                     if (fullMergeState.base.bpPath !== null) {
                         const bpManifestPath = fullMergeState.base.bpPath + "manifest.json";
                         const bpFile = finalZip.file(bpManifestPath);
@@ -1787,7 +1816,7 @@
                                 const bpStr = await bpFile.async("string");
                                 const bpObj = parseContent(bpStr, "manifest.json");
                                 
-                                if (!bpObj.header) bpObj.header = {}; // Paracaídas
+                                if (!bpObj.header) bpObj.header = {}; 
                                 bpObj.header.uuid = generarUUID();
                                 
                                 if (bpObj.modules && Array.isArray(bpObj.modules)) {
@@ -1796,7 +1825,6 @@
                                 
                                 if (viejoRpUuid && nuevoRpUuid) {
                                     if (!bpObj.dependencies) bpObj.dependencies = [];
-                                    // Comprobar si ya existe dependencia al viejo RP
                                     let depFound = false;
                                     bpObj.dependencies.forEach(dep => {
                                         if (dep.uuid === viejoRpUuid) {
@@ -1804,7 +1832,6 @@
                                             depFound = true;
                                         }
                                     });
-                                    // Si no la tenía, la forzamos para que el RP y BP se vinculen
                                     if (!depFound) {
                                         bpObj.dependencies.push({
                                             "uuid": nuevoRpUuid,
