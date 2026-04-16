@@ -136,6 +136,16 @@
         .tree-file { cursor: pointer; display: flex; align-items: center; padding: 6px 6px 6px 28px; font-size: 0.9em; color: var(--text-primary); border-radius: 4px; transition: background 0.2s; }
         .tree-file:hover { background-color: var(--highlight-change-bg); color: #000; font-weight: bold;}
         .tree-file::before { content: '📄'; margin-right: 8px; font-size: 1.1em; }
+        
+        /* --- NUEVO: ESTILO PARA ARCHIVO SELECCIONADO --- */
+        .tree-file.tree-file-selected {
+            background-color: rgba(39, 174, 96, 0.15);
+            box-shadow: 0 0 10px rgba(39, 174, 96, 0.4);
+            border: 1px solid var(--border-success);
+            font-weight: bold;
+            color: var(--text-primary);
+        }
+
         .tree-children { display: none; }
         .tree-children.open { display: block; }
 
@@ -952,6 +962,14 @@
 
                         fileDiv.onclick = async (e) => {
                             e.stopPropagation();
+                            
+                            // NUEVO: Lógica visual de selección inteligente
+                            const explorerRoot = fileDiv.closest('.zip-explorer');
+                            if (explorerRoot) {
+                                explorerRoot.querySelectorAll('.tree-file-selected').forEach(el => el.classList.remove('tree-file-selected'));
+                            }
+                            fileDiv.classList.add('tree-file-selected');
+
                             try {
                                 let fileData;
                                 if (type === 'base' && addonModifications[fullPath]) {
