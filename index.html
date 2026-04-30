@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Combinador de Addons Minecraft Pro - Juega con Coda</title>
+    <title>Combinador de Addons Minecraft Pro v1.11 - Juega con Coda</title>
     <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
@@ -542,7 +542,7 @@
             let files = { base: null, additional: null };
             let pairing = { pairs: [], nextPairId: 1, activeSelection: null };
             let originalForComparison = null;
-            let mergedResult = { data: null, changes: new Set() };
+            let mergedResult = { data: null, changes: new Map() };
             
             let zipPaths = { base: [], additional: [] };
             let zipContentsCache = { base: null, additional: null };
@@ -694,7 +694,13 @@
                         return parts.slice(i).join('/');
                     }
                 }
-                return parts[parts.length - 1]; 
+                // Para archivos sin carpeta MC reconocida (típicamente manifest.json, pack_icon.png),
+                // desambiguar por el nombre de la carpeta padre evita colisiones BP/RP cuando ambos
+                // tienen un manifest.json. Antes, ambos normalizaban a "manifest.json" y se mezclaban
+                // en el batch merge.
+                const fname = parts[parts.length - 1];
+                const parent = parts.length >= 2 ? parts[parts.length - 2] : '';
+                return parent ? `${parent}/${fname}` : fname;
             }
 
             batchMergeBtn.addEventListener('click', () => {
@@ -769,58 +775,154 @@
                 batchModal.classList.remove('active');
             });
 
+            // =============================================================
+            // HELPERS DE FUSIÓN BEDROCK-AWARE (v1.10)
+            // =============================================================
+            function pathHasSegment(path, segment) {
+                return path.toLowerCase().split('/').includes(segment);
+            }
+            function isUiJson(path) {
+                const p = path.toLowerCase();
+                if (p.endsWith('_ui_defs.json') || p.endsWith('_global_variables.json')) return false;
+                return pathHasSegment(p, 'ui') && p.endsWith('.json');
+            }
+            function isAnimationJson(path) {
+                const p = path.toLowerCase();
+                return (pathHasSegment(p, 'animations') || pathHasSegment(p, 'animation_controllers'))
+                       && p.endsWith('.json');
+            }
+            function isScriptFile(path) {
+                return path.toLowerCase().endsWith('.js');
+            }
+            function addPathSuffix(path, suffix) {
+                const dot = path.lastIndexOf('.');
+                const slash = path.lastIndexOf('/');
+                if (dot === -1 || dot < slash) return path + suffix;
+                return path.substring(0, dot) + suffix + path.substring(dot);
+            }
+            function getUiNamespace(obj) {
+                return (obj && typeof obj.namespace === 'string') ? obj.namespace : null;
+            }
+
+            // Fusión segura de dos scripts ES Module: extrae los imports de
+            // ambos al tope (deduplicados) y aísla cada cuerpo en una IIFE
+            // async para evitar colisiones de scope (const/let duplicados).
+            // - Soporta imports de una y varias líneas.
+            // - Si detecta `export`, no envuelve en IIFE (export sólo es válido
+            //   en el top-level de un módulo) y avisa por consola.
+            function mergeJsModulesSafely(baseStr, addStr) {
+                // Regex tolerante a saltos de línea entre el `import` y la cadena.
+                // Cubre: import "x";   import x from "y";   import {a, b} from "y";
+                //        import * as Foo from "y";   y formas multilínea.
+                const importRe = /^[ \t]*import\b[\s\S]*?from\s*['"][^'"]+['"]\s*;?\s*$|^[ \t]*import\s*['"][^'"]+['"]\s*;?\s*$/gm;
+                
+                const extract = (src) => {
+                    const imports = [];
+                    const body = src.replace(importRe, (m) => {
+                        // Normaliza el import a una sola línea con `;` final.
+                        const oneLine = m.replace(/\s+/g, ' ').trim().replace(/;?$/, ';');
+                        imports.push(oneLine);
+                        return '';
+                    });
+                    const hasExport = /^[ \t]*export\b/m.test(body);
+                    return { imports, body, hasExport };
+                };
+
+                const a = extract(baseStr);
+                const b = extract(addStr);
+                const allImports = Array.from(new Set([...a.imports, ...b.imports]));
+
+                if (a.hasExport || b.hasExport) {
+                    console.warn("[mergeJsModulesSafely] Uno de los scripts contiene `export`. " +
+                                 "Se omite el envoltorio IIFE para preservar la validez del módulo. " +
+                                 "Es posible que haya colisiones de scope; revisa el resultado.");
+                    // Sin IIFE: concatenamos cuerpos respetando que los imports vayan arriba.
+                    return [
+                        '/* === Imports hoisted (fusión segura) === */',
+                        ...allImports,
+                        '',
+                        '/* === Script base === */',
+                        a.body.trim(),
+                        '',
+                        '/* === Script adicional === */',
+                        b.body.trim()
+                    ].join('\n');
+                }
+
+                return [
+                    '/* === Imports hoisted (fusión segura) === */',
+                    ...allImports,
+                    '',
+                    '/* === Script base (scope aislado) === */',
+                    '(async () => {',
+                    a.body,
+                    '})();',
+                    '',
+                    '/* === Script adicional (scope aislado) === */',
+                    '(async () => {',
+                    b.body,
+                    '})();'
+                ].join('\n');
+            }
+
+            // =============================================================
+            // CUSTOMIZER LODASH BEDROCK-AWARE
+            // =============================================================
             const smartMergeCustomizer = (objValue, srcValue, key) => {
                 if (_.isArray(objValue) && _.isArray(srcValue)) {
-                    
-                    if (key === '_lines') {
-                        return _.uniq(objValue.concat(srcValue));
+
+                    if (key === '_lines')  return _.uniq(objValue.concat(srcValue));
+                    if (key === 'ui_defs') return _.uniq(objValue.concat(srcValue));
+
+                    // Arrays sensibles al orden: NUNCA deduplicar.
+                    // Bedrock evalúa transitions y comandos MoLang secuencialmente;
+                    // dedupe rompe la lógica de máquinas de estado en animation_controllers.
+                    const orderSensitive = new Set([
+                        'transitions', 'on_entry', 'on_exit',
+                        'pre_animation', 'particle_effects', 'sound_effects', 'timeline'
+                    ]);
+                    if (typeof key === 'string' && orderSensitive.has(key)) {
+                        return objValue.concat(srcValue);
                     }
 
-                    const tupleKeys = [
-                        'size', 'offset', 'uv', 'uv_size', 'color', 'alpha',
-                        'anchor_from', 'anchor_to', 'clip_offset', 'clip_pixel_size',
-                        'position', 'rotation', 'pivot', 'scale', 'origin', 'destination',
-                        'padding', 'font_size', 'line_padding', 'shadow_offset'
-                    ];
-                    const isVariable = typeof key === 'string' && key.startsWith('$');
-                    if (key && (tupleKeys.includes(key) || isVariable)) {
-                        return srcValue; 
+                    // Tuplas y variables UI: el adicional sobrescribe.
+                    const tupleKeys = new Set([
+                        'size','offset','uv','uv_size','color','alpha',
+                        'anchor_from','anchor_to','clip_offset','clip_pixel_size',
+                        'position','rotation','pivot','scale','origin','destination',
+                        'padding','font_size','line_padding','shadow_offset'
+                    ]);
+                    if (typeof key === 'string' && (tupleKeys.has(key) || key.startsWith('$'))) {
+                        return srcValue;
                     }
 
+                    // Array 'controls' de Bedrock UI: match por "instance@template".
                     if (key === 'controls') {
-                        const mergedArray = [...objValue];
+                        const merged = [...objValue];
                         srcValue.forEach(srcItem => {
-                            if (_.isPlainObject(srcItem)) {
-                                const srcKeys = Object.keys(srcItem);
-                                if (srcKeys.length > 0) {
-                                    const srcItemKey = srcKeys[0];
-                                    const existingIndex = mergedArray.findIndex(obj => 
-                                        _.isPlainObject(obj) && Object.keys(obj)[0] === srcItemKey
-                                    );
-                                    
-                                    if (existingIndex !== -1) {
-                                        _.mergeWith(mergedArray[existingIndex], srcItem, smartMergeCustomizer);
-                                    } else {
-                                        mergedArray.push(srcItem);
-                                    }
-                                } else {
-                                    mergedArray.push(srcItem);
-                                }
+                            if (!_.isPlainObject(srcItem) || !Object.keys(srcItem).length) {
+                                merged.push(srcItem);
+                                return;
+                            }
+                            const srcKey = Object.keys(srcItem)[0];
+                            const idx = merged.findIndex(o =>
+                                _.isPlainObject(o) && Object.keys(o)[0] === srcKey
+                            );
+                            if (idx === -1) {
+                                merged.push(srcItem);
                             } else {
-                                mergedArray.push(srcItem);
+                                // Mismo "instance@template": realmente es el mismo control.
+                                // Clonamos para no mutar el array base original.
+                                merged[idx] = _.mergeWith({}, merged[idx], srcItem, smartMergeCustomizer);
                             }
                         });
-                        return mergedArray;
+                        return merged;
                     }
 
                     return _.uniqWith(objValue.concat(srcValue), _.isEqual);
                 }
-                
-                if (_.isPlainObject(objValue) && _.isPlainObject(srcValue)) {
-                    return undefined; 
-                }
-                
-                return undefined;
+
+                return undefined; // dejar que Lodash recurra en objetos
             };
 
             confirmBatchBtn.addEventListener('click', async () => {
@@ -864,7 +966,15 @@
                         const addContentStr = await zipContentsCache.additional[pair.additionalPath]();
                         const addObj = parseContent(addContentStr, pair.additionalPath);
 
-                        _.mergeWith(baseObj, addObj, smartMergeCustomizer);
+                        // FUSIÓN SEGURA DE JAVASCRIPT EN AUTO-FUSIÓN
+                        // Cambio v1.10: en vez de concatenar texto bruto (lo que rompe
+                        // ES Modules cuando hay imports en el script adicional), hoisting
+                        // de imports + IIFE async para aislar scope.
+                        if (baseObj._isJs && addObj._isJs) {
+                            baseObj.content = mergeJsModulesSafely(baseObj.content, addObj.content);
+                        } else {
+                            _.mergeWith(baseObj, addObj, smartMergeCustomizer);
+                        }
                         
                         addonModifications[pair.basePath] = stringifyContent(baseObj);
                         
@@ -1100,21 +1210,66 @@
                     return { _isJs: true, content: content };
                 }
 
+                // 1. Intento puro
                 try { return JSON.parse(content); } catch (e) { }
+
+                // 2. Limpieza de comentarios y comas colgantes (string-aware con escapes correctos).
+                //    Usa un parser por estados en vez de un regex frágil para no eliminar
+                //    contenido legítimo dentro de strings (ej. "url": "http://...").
                 try {
-                    let cleaned = content.replace(/\\"|"(?:\\"|[^"])*"|(\/\/.*|\/\*[\s\S]*?\*\/)/g, (m, g) => g ? "" : m);
-                    cleaned = cleaned.replace(/,\s*([\]}])/g, "$1");
+                    const cleaned = stripJsoncCommentsAndTrailingCommas(content);
                     return JSON.parse(cleaned);
-                } catch (e2) {
-                    try {
-                        const startIndex = content.search(/[[{]/);
-                        if (startIndex === -1) throw new Error('No JSON');
-                        const objectString = content.substring(startIndex);
-                        return new Function(`return ${objectString}`)();
-                    } catch (e3) {
-                        throw new Error("Formato Corrupto");
+                } catch (e2) { }
+
+                // 3. Último recurso: evaluación con guard. Sólo se permite si parece
+                //    un literal JSON (empieza por { o [) y no contiene tokens peligrosos
+                //    como llamadas a funciones, palabras clave reservadas, etc.
+                try {
+                    const startIndex = content.search(/[[{]/);
+                    if (startIndex === -1) throw new Error('No JSON');
+                    const candidate = content.substring(startIndex).trim();
+                    if (/[;]|\b(?:function|=>|require|import|while|for|new\s+[A-Z])\b/.test(candidate)) {
+                        throw new Error("Contenido sospechoso, eval rechazada");
                     }
+                    // eslint-disable-next-line no-new-func
+                    return new Function(`"use strict"; return (${candidate});`)();
+                } catch (e3) {
+                    throw new Error("Formato Corrupto");
                 }
+            }
+
+            // Strip de comentarios //... y /*...*/ y comas colgantes en arrays/objetos,
+            // respetando strings entre comillas (incluyendo escapes \\ y \").
+            function stripJsoncCommentsAndTrailingCommas(src) {
+                let out = '';
+                const len = src.length;
+                let i = 0;
+                let inStr = false, strQuote = '';
+                while (i < len) {
+                    const c = src[i];
+                    const n = src[i+1];
+                    if (inStr) {
+                        out += c;
+                        if (c === '\\' && i + 1 < len) { out += src[i+1]; i += 2; continue; }
+                        if (c === strQuote) inStr = false;
+                        i++; continue;
+                    }
+                    if (c === '"' || c === "'") { inStr = true; strQuote = c; out += c; i++; continue; }
+                    if (c === '/' && n === '/') {
+                        while (i < len && src[i] !== '\n') i++;
+                        continue;
+                    }
+                    if (c === '/' && n === '*') {
+                        i += 2;
+                        while (i < len && !(src[i] === '*' && src[i+1] === '/')) i++;
+                        i += 2;
+                        continue;
+                    }
+                    out += c;
+                    i++;
+                }
+                // Comas colgantes: , seguida de espacios y } o ]
+                return out.replace(/,(\s*[\]}])/g, '$1');
             }
 
             function stringifyContent(obj) {
@@ -1122,9 +1277,9 @@
                 if (obj._isLang) {
                     let out = [];
                     if(obj._lines) obj._lines.forEach(l => out.push(l));
-                    for(let k in obj) { 
-                        if(k !== '_isLang' && k !== '_lines') out.push(`${k}=${obj[k]}`); 
-                    }
+                    Object.keys(obj).forEach(k => {
+                        if(k !== '_isLang' && k !== '_lines') out.push(`${k}=${obj[k]}`);
+                    });
                     return out.join('\n');
                 }
                 if (obj._isJs) {
@@ -1269,11 +1424,15 @@
             }
 
             function processAndShowMerge(finalObject) {
+                // Validamos PRIMERO antes de tocar el estado global. Si la validación falla
+                // (ej. referencias circulares introducidas por una fusión rara), abortamos
+                // sin haber sobrescrito files.base.parsed.
                 try {
                     if (!finalObject._isLang && !finalObject._isJs) {
-                        JSON.parse(JSON.stringify(finalObject));
+                        JSON.stringify(finalObject); // throws si hay referencias circulares
                     }
                 } catch (validationErr) {
+                    console.error("Validación fallida:", validationErr);
                     showNotification("Validación fallida: La estructura resultante no es válida.", "error");
                     return;
                 }
@@ -1351,25 +1510,29 @@
                 processAndShowMerge(finalObject);
             });
 
-            function findChanges(original, merged, path = '', changes = new Set()) {
+            function findChanges(original, merged, path = '', changes = new Map()) {
                 const isObject = (obj) => obj && typeof obj === 'object' && !Array.isArray(obj);
-                for (const key in merged) {
-                    if (Object.prototype.hasOwnProperty.call(merged, key)) {
-                        const newPath = path ? `${path}.${key}` : key;
-                        const originalVal = original ? original[key] : undefined;
-                        
-                        if (originalVal === undefined) {
-                            changes.add({ path: newPath, isBlock: isObject(merged[key]) || Array.isArray(merged[key]) });
-                        } else if (isObject(merged[key]) && isObject(originalVal)) {
-                            findChanges(originalVal, merged[key], newPath, changes);
-                        } else if (Array.isArray(merged[key]) && Array.isArray(originalVal)) {
-                            if (!_.isEqual(merged[key], originalVal)) { changes.add({ path: newPath, isBlock: true }); }
-                        } else if (!_.isEqual(merged[key], originalVal)) {
-                            changes.add({ path: newPath, isBlock: false });
-                        }
+                if (!merged || typeof merged !== 'object') return changes;
+                Object.keys(merged).forEach(key => {
+                    const newPath = path ? `${path}.${key}` : key;
+                    const originalVal = original ? original[key] : undefined;
+                    
+                    if (originalVal === undefined) {
+                        changes.set(newPath, { path: newPath, isBlock: isObject(merged[key]) || Array.isArray(merged[key]) });
+                    } else if (isObject(merged[key]) && isObject(originalVal)) {
+                        findChanges(originalVal, merged[key], newPath, changes);
+                    } else if (Array.isArray(merged[key]) && Array.isArray(originalVal)) {
+                        if (!_.isEqual(merged[key], originalVal)) { changes.set(newPath, { path: newPath, isBlock: true }); }
+                    } else if (!_.isEqual(merged[key], originalVal)) {
+                        changes.set(newPath, { path: newPath, isBlock: false });
                     }
-                }
+                });
                 return changes;
+            }
+
+            // Escapa un string para uso seguro dentro de RegExp.
+            function escapeRegex(str) {
+                return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             }
 
             function showFinalResult() {
@@ -1397,14 +1560,20 @@
                 
                 let lines = JSON.stringify(obj, null, 2).split('\n');
                 const linesToHighlight = new Set();
-                
-                changes.forEach(change => {
+
+                // Soporta tanto Map (nuevo) como Set (legacy) por seguridad.
+                const changeIter = changes && changes.values ? changes.values() : (changes || []);
+
+                for (const change of changeIter) {
                     const pathParts = change.path.split('.');
+                    const key = pathParts[pathParts.length - 1];
+                    // Escapamos `key` porque las claves de Bedrock pueden contener
+                    // metacaracteres regex (puntos, paréntesis, etc.).
+                    const keyRegex = new RegExp(`^\\s*"${escapeRegex(key)}"\\s*:`);
+
                     for(let i=0; i<lines.length; i++) {
                         const line = lines[i];
                         const lineIndent = line.search(/\S/);
-                        const key = pathParts[pathParts.length - 1];
-                        const keyRegex = new RegExp(`^\\s*"${key}":`);
 
                         if(line.match(keyRegex) || (change.isBlock && isNumericKey(key) && lineIndent > 0)) {
                             linesToHighlight.add(i);
@@ -1421,7 +1590,7 @@
                             }
                         }
                     }
-                });
+                }
                 return lines.map((line, index) => linesToHighlight.has(index) ? `<span class="highlight-change">${escapeHtml(line)}</span>` : escapeHtml(line)).join('\n');
             }
             
@@ -1433,32 +1602,46 @@
                     return;
                 }
                 const dataStr = stringifyContent(files.base.parsed);
-                const dataUri = 'data:text/plain;charset=utf-8,' + encodeURIComponent(dataStr);
                 let exportName = files.base.file.name;
                 if (exportName.includes('/')) exportName = exportName.split('/').pop();
-                
-                if(!exportName.endsWith('.lang') && !exportName.endsWith('.js') && !exportName.endsWith('.json')) exportName += '_combinado.json';
 
+                if(!exportName.endsWith('.lang') && !exportName.endsWith('.js') && !exportName.endsWith('.json')) {
+                    exportName += '_combinado.json';
+                }
+
+                // Blob API en vez de data URI: los data URIs pueden truncarse en archivos
+                // grandes (>~2MB) en algunos navegadores.
+                const blob = new Blob([dataStr], { type: 'text/plain;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
                 const linkElement = document.createElement('a');
-                linkElement.setAttribute('href', dataUri);
+                linkElement.setAttribute('href', url);
                 linkElement.setAttribute('download', exportName);
                 linkElement.click();
+                setTimeout(() => URL.revokeObjectURL(url), 1500);
             });
 
             exportZipBtn.addEventListener('click', async () => {
                 if (Object.keys(addonModifications).length === 0) return;
                 
                 showNotification("Comprimiendo archivos modificados...", "info");
+                exportZipBtn.style.pointerEvents = "none";
                 try {
                     const zip = new JSZip();
+                    // Estructura plana del parche: agrupa por contenedor anidado y
+                    // mete los archivos modificados respetando la ruta interna.
+                    // (No re-empaquetamos como .mcpack porque es solo un patch.)
                     for (const [fullPath, content] of Object.entries(addonModifications)) {
                         let cleanPath = fullPath;
-                        let lastMcpack = cleanPath.lastIndexOf('.mcpack/');
-                        let lastZip = cleanPath.lastIndexOf('.zip/');
-                        let maxIdx = Math.max(lastMcpack, lastZip);
-                        
-                        if(maxIdx !== -1) {
-                            cleanPath = cleanPath.substring(maxIdx + (maxIdx === lastMcpack ? 8 : 5));
+                        const mcpIdx = cleanPath.lastIndexOf('.mcpack/');
+                        const zipIdx = cleanPath.lastIndexOf('.zip/');
+                        if (mcpIdx > zipIdx && mcpIdx !== -1) {
+                            // Mantenemos el nombre del .mcpack como carpeta para que el
+                            // usuario vea de dónde sale cada archivo (BP/RP).
+                            cleanPath = cleanPath.substring(0, mcpIdx + '.mcpack'.length).split('/').pop()
+                                        + '/' + cleanPath.substring(mcpIdx + '.mcpack/'.length);
+                        } else if (zipIdx !== -1) {
+                            cleanPath = cleanPath.substring(0, zipIdx + '.zip'.length).split('/').pop()
+                                        + '/' + cleanPath.substring(zipIdx + '.zip/'.length);
                         }
                         zip.file(cleanPath, content);
                     }
@@ -1472,10 +1655,13 @@
                     a.href = url;
                     a.download = "Archivos_Modificados_Patch.zip";
                     a.click();
-                    URL.revokeObjectURL(url);
+                    setTimeout(() => URL.revokeObjectURL(url), 1500);
                     showNotification("ZIP descargado.", "success");
                 } catch (e) {
+                    console.error("[exportZip] Error:", e);
                     showNotification("Error creando el ZIP.", "error");
+                } finally {
+                    exportZipBtn.style.pointerEvents = "auto";
                 }
             });
 
@@ -1490,52 +1676,11 @@
                     const mainZip = new JSZip();
                     await mainZip.loadAsync(baseArchiveFile);
 
-                    let containerModifications = {}; 
-                    let rootModifications = {}; 
-
-                    for (const [fullPath, newContent] of Object.entries(addonModifications)) {
-                        let lastMcpack = fullPath.lastIndexOf('.mcpack/');
-                        let lastZip = fullPath.lastIndexOf('.zip/');
-                        let lastContainerIdx = Math.max(lastMcpack, lastZip);
-
-                        if (lastContainerIdx !== -1) {
-                            let extLen = (lastContainerIdx === lastMcpack) ? 7 : 4;
-                            const containerPath = fullPath.substring(0, lastContainerIdx + extLen);
-                            const internalPath = fullPath.substring(lastContainerIdx + extLen + 1);
-
-                            if(!containerModifications[containerPath]) containerModifications[containerPath] = {};
-                            containerModifications[containerPath][internalPath] = newContent;
-                        } else {
-                            rootModifications[fullPath] = newContent;
-                        }
-                    }
-
-                    for (const [containerPath, mods] of Object.entries(containerModifications)) {
-                        const fileRef = mainZip.file(containerPath);
-                        if (!fileRef) {
-                            console.warn("⚠️ Saltando contenedor corrupto o inexistente:", containerPath);
-                            continue;
-                        }
-                        
-                        const innerZipData = await fileRef.async("blob");
-                        const innerZip = new JSZip();
-                        await innerZip.loadAsync(innerZipData);
-
-                        for (const [internalPath, newContent] of Object.entries(mods)) {
-                            innerZip.file(internalPath, newContent);
-                        }
-
-                        const newInnerZipData = await innerZip.generateAsync({
-                            type: "blob",
-                            compression: "DEFLATE",
-                            compressionOptions: { level: 9 }
-                        });
-                        mainZip.file(containerPath, newInnerZipData);
-                    }
-
-                    for (const [fullPath, newContent] of Object.entries(rootModifications)) {
-                        mainZip.file(fullPath, newContent);
-                    }
+                    // BUG FIX (v1.11): aplicación correcta dentro de .mcpack anidados.
+                    // Antes se quitaba el prefijo y se escribía plano, lo que (a) perdía
+                    // la modificación porque el .mcpack interno no se actualizaba,
+                    // (b) hacía colisionar BP/manifest.json con RP/manifest.json.
+                    await applyModificationsToZip(mainZip, addonModifications);
 
                     const finalBlob = await mainZip.generateAsync({
                         type:"blob",
@@ -1546,16 +1691,16 @@
                     
                     const a = document.createElement('a');
                     a.href = url;
-                    let exportName = baseArchiveFile.name.replace(/(\.zip|\.mcpack|\.mcaddon)$/i, '_COMBINADO$1');
+                    let exportName = baseArchiveFile.name.replace(/(\.zip|\.mcpack|\.mcaddon)$/i, '_COMBINADO.mcaddon');
                     a.download = exportName;
                     a.click();
                     
-                    URL.revokeObjectURL(url);
+                    setTimeout(() => URL.revokeObjectURL(url), 1500);
                     showNotification("¡Addon empaquetado y descargado con éxito!", "success");
                     
                 } catch (e) {
                     showNotification("Ocurrió un error al intentar empaquetar el Addon.", "error");
-                    console.error(e);
+                    console.error("Error al exportar:", e);
                 } finally {
                     exportAddonBtn.textContent = "📦 Exportar Addon Completo";
                     exportAddonBtn.style.pointerEvents = "auto";
@@ -1693,6 +1838,106 @@
                 });
             }
 
+            function getFileIgnoreCase(zip, path) {
+                const lowerPath = path.toLowerCase();
+                for (const key in zip.files) {
+                    if (key.toLowerCase() === lowerPath) {
+                        return { file: zip.files[key], realPath: key };
+                    }
+                }
+                return null;
+            }
+
+            // Versión indexada de `getFileIgnoreCase`. El primer uso construye un Map
+            // lowerKey -> realKey en O(n); las consultas siguientes son O(1). El índice
+            // se invalida cuando añadimos una clave nueva al zip (insertando manualmente).
+            // Acelera mucho `inyectarAddon` en addons grandes.
+            function buildLowerIndex(zip) {
+                const map = new Map();
+                for (const key in zip.files) {
+                    map.set(key.toLowerCase(), key);
+                }
+                return map;
+            }
+            function indexedGetIgnoreCase(zip, lowerIndex, path) {
+                const realKey = lowerIndex.get(path.toLowerCase());
+                if (realKey === undefined) return null;
+                return { file: zip.files[realKey], realPath: realKey };
+            }
+
+            // Aplica las modificaciones (`addonModifications`) a un JSZip respetando
+            // los `.mcpack` / `.zip` anidados: si una modificación apunta dentro de
+            // un archivo comprimido nested, se descomprime, se actualiza, se vuelve
+            // a empaquetar y se reemplaza en el zip exterior. Resuelve el bug de
+            // "los cambios no se ven al exportar" cuando el .mcaddon contiene packs
+            // anidados como .mcpack.
+            async function applyModificationsToZip(targetZip, modifications) {
+                // Agrupa modificaciones por su contenedor más profundo (nested zip).
+                const groups = new Map();
+                for (const [fullPath, content] of Object.entries(modifications)) {
+                    const mcpIdx = fullPath.lastIndexOf('.mcpack/');
+                    const zipIdx = fullPath.lastIndexOf('.zip/');
+                    let prefix = '', innerPath = fullPath;
+
+                    if (mcpIdx > zipIdx && mcpIdx !== -1) {
+                        prefix = fullPath.substring(0, mcpIdx + '.mcpack'.length);
+                        innerPath = fullPath.substring(mcpIdx + '.mcpack/'.length);
+                    } else if (zipIdx !== -1) {
+                        prefix = fullPath.substring(0, zipIdx + '.zip'.length);
+                        innerPath = fullPath.substring(zipIdx + '.zip/'.length);
+                    }
+                    if (!groups.has(prefix)) groups.set(prefix, new Map());
+                    groups.get(prefix).set(innerPath, content);
+                }
+
+                for (const [prefix, mods] of groups) {
+                    if (prefix === '') {
+                        // Sin contenedor anidado: escribimos directamente.
+                        for (const [path, content] of mods) {
+                            const existing = getFileIgnoreCase(targetZip, path);
+                            const realPath = existing ? existing.realPath : path;
+                            targetZip.file(realPath, content);
+                        }
+                        continue;
+                    }
+
+                    // Localizamos el contenedor anidado (case-insensitive).
+                    const nestedInfo = getFileIgnoreCase(targetZip, prefix);
+                    if (!nestedInfo || !nestedInfo.file || nestedInfo.file.dir) {
+                        console.warn(`[applyModificationsToZip] Contenedor anidado no encontrado: ${prefix}, fallback a escritura plana.`);
+                        for (const [path, content] of mods) {
+                            targetZip.file(`${prefix}/${path}`, content);
+                        }
+                        continue;
+                    }
+
+                    try {
+                        const nestedBytes = await nestedInfo.file.async("uint8array");
+                        const nestedZip = new JSZip();
+                        await nestedZip.loadAsync(nestedBytes);
+
+                        for (const [path, content] of mods) {
+                            const existingInner = getFileIgnoreCase(nestedZip, path);
+                            const innerReal = existingInner ? existingInner.realPath : path;
+                            nestedZip.file(innerReal, content);
+                        }
+
+                        const repacked = await nestedZip.generateAsync({
+                            type: "uint8array",
+                            compression: "DEFLATE",
+                            compressionOptions: { level: 9 }
+                        });
+                        targetZip.file(nestedInfo.realPath, repacked);
+                    } catch (e) {
+                        console.error(`[applyModificationsToZip] Falló re-empaquetado de ${prefix}:`, e);
+                        // Fallback: escribir plano para no perder los cambios completamente.
+                        for (const [path, content] of mods) {
+                            targetZip.file(`${prefix}/${path}`, content);
+                        }
+                    }
+                }
+            }
+
             let globalYieldCounter = 0; 
 
             async function transferirZipPlano(sourceZip, targetZip, prefix = '') {
@@ -1704,11 +1949,18 @@
                     const fullPath = prefix ? `${prefix}/${relativePath}` : relativePath;
                     
                     if (relativePath.toLowerCase().endsWith('.mcpack') || relativePath.toLowerCase().endsWith('.zip')) {
-                        let nestedZipData = await zipEntry.async("blob");
-                        const nestedZip = new JSZip();
-                        await nestedZip.loadAsync(nestedZipData);
-                        nestedZipData = null; 
-                        await transferirZipPlano(nestedZip, targetZip, fullPath);
+                        try {
+                            let nestedZipData = await zipEntry.async("blob");
+                            const nestedZip = new JSZip();
+                            await nestedZip.loadAsync(nestedZipData);
+                            nestedZipData = null; 
+                            await transferirZipPlano(nestedZip, targetZip, fullPath);
+                        } catch (e) {
+                            // Si no podemos leer el zip anidado, lo copiamos como blob crudo.
+                            console.warn(`[transferirZipPlano] Zip anidado ilegible ${fullPath}, se copia como binario.`, e);
+                            const content = await zipEntry.async("uint8array");
+                            targetZip.file(fullPath, content);
+                        }
                     } else {
                         const content = await zipEntry.async("uint8array");
                         targetZip.file(fullPath, content);
@@ -1717,62 +1969,283 @@
             }
 
             async function inyectarAddon(sourceZip, targetZip, prefix = '') {
-                for (const relativePath in sourceZip.files) {
-                    if (++globalYieldCounter % 100 === 0) await new Promise(r => setTimeout(r, 0)); 
-                    
-                    const zipEntry = sourceZip.files[relativePath];
-                    if (zipEntry.dir) continue;
-                    const fullPath = prefix ? `${prefix}/${relativePath}` : relativePath;
-                    
-                    if (relativePath.toLowerCase().endsWith('.mcpack') || relativePath.toLowerCase().endsWith('.zip')) {
-                        let nestedZipData = await zipEntry.async("blob");
-                        const nestedZip = new JSZip();
-                        await nestedZip.loadAsync(nestedZipData);
-                        nestedZipData = null; 
-                        await inyectarAddon(nestedZip, targetZip, fullPath);
-                    } else {
-                        let destPath = null;
+                // Acumulamos archivos renombrados por colisión semántica para
+                // post-procesar al final del nivel raíz (parche de _ui_defs.json
+                // e inyección de imports en scripts entry).
+                const isRootCall = !inyectarAddon._renames;
+                if (isRootCall) {
+                    inyectarAddon._renames = { uis: [], scripts: [], conflicts: [] };
+                    // Índice case-insensitive del zip destino para no escanear O(n) por archivo.
+                    inyectarAddon._lowerIndex = buildLowerIndex(targetZip);
+                }
+                const renames = inyectarAddon._renames;
+                const lowerIndex = inyectarAddon._lowerIndex;
+
+                const writeIndexed = (path, content) => {
+                    targetZip.file(path, content);
+                    lowerIndex.set(path.toLowerCase(), path);
+                };
+
+                try {
+                    for (const relativePath in sourceZip.files) {
+                        if (++globalYieldCounter % 100 === 0) await new Promise(r => setTimeout(r, 0)); 
                         
+                        const zipEntry = sourceZip.files[relativePath];
+                        if (zipEntry.dir) continue;
+                        const fullPath = prefix ? `${prefix}/${relativePath}` : relativePath;
+                        
+                        // --- ZIP anidado ---
+                        if (relativePath.toLowerCase().endsWith('.mcpack') || relativePath.toLowerCase().endsWith('.zip')) {
+                            try {
+                                let nestedZipData = await zipEntry.async("blob");
+                                const nestedZip = new JSZip();
+                                await nestedZip.loadAsync(nestedZipData);
+                                nestedZipData = null; 
+                                await inyectarAddon(nestedZip, targetZip, fullPath);
+                            } catch (nestedErr) {
+                                console.warn(`[inyectarAddon] No se pudo abrir zip anidado ${fullPath}:`, nestedErr);
+                                renames.conflicts.push({ path: fullPath, reason: 'nested_zip_unreadable' });
+                            }
+                            continue;
+                        }
+
+                        // --- Re-mapeo BP/RP del adicional al base ---
+                        let destPath = null;
                         if (fullMergeState.additional.bpPath !== null && fullPath.startsWith(fullMergeState.additional.bpPath)) {
-                            if (fullMergeState.base.bpPath !== null) {
-                                destPath = fullMergeState.base.bpPath + fullPath.substring(fullMergeState.additional.bpPath.length);
-                            }
+                            destPath = (fullMergeState.base.bpPath !== null)
+                                ? fullMergeState.base.bpPath + fullPath.substring(fullMergeState.additional.bpPath.length)
+                                : fullPath;
                         } else if (fullMergeState.additional.rpPath !== null && fullPath.startsWith(fullMergeState.additional.rpPath)) {
-                            if (fullMergeState.base.rpPath !== null) {
-                                destPath = fullMergeState.base.rpPath + fullPath.substring(fullMergeState.additional.rpPath.length);
+                            destPath = (fullMergeState.base.rpPath !== null)
+                                ? fullMergeState.base.rpPath + fullPath.substring(fullMergeState.additional.rpPath.length)
+                                : fullPath;
+                        } else {
+                            destPath = fullPath;
+                        }
+                        if (!destPath) continue; 
+                        
+                        const existingInfo = indexedGetIgnoreCase(targetZip, lowerIndex, destPath);
+                        const existingFile = existingInfo ? existingInfo.file : null;
+                        const finalDestPath = existingInfo ? existingInfo.realPath : destPath;
+                        
+                        // --- MANIFEST: misma lógica que antes, con guards Array.isArray ---
+                        if (finalDestPath.toLowerCase().endsWith('manifest.json')) {
+                            if (existingFile) {
+                                try {
+                                    const baseStr = await existingFile.async("string");
+                                    const addStr = await zipEntry.async("string");
+                                    const baseObj = parseContent(baseStr, finalDestPath);
+                                    const addObj = parseContent(addStr, fullPath);
+                                    
+                                    if(Array.isArray(addObj.modules)) {
+                                        if(!Array.isArray(baseObj.modules)) baseObj.modules = [];
+                                        baseObj.modules = _.uniqWith(baseObj.modules.concat(addObj.modules), _.isEqual);
+                                    }
+                                    if(Array.isArray(addObj.dependencies)) {
+                                        if(!Array.isArray(baseObj.dependencies)) baseObj.dependencies = [];
+                                        baseObj.dependencies = _.uniqWith(baseObj.dependencies.concat(addObj.dependencies), _.isEqual);
+                                    }
+                                    if(Array.isArray(addObj.capabilities)) {
+                                        if(!Array.isArray(baseObj.capabilities)) baseObj.capabilities = [];
+                                        baseObj.capabilities = _.uniq(baseObj.capabilities.concat(addObj.capabilities));
+                                    }
+                                    if(Array.isArray(addObj.subpacks)) {
+                                        if(!Array.isArray(baseObj.subpacks)) baseObj.subpacks = [];
+                                        // Dedupe por folder_name (clave única en Bedrock); el resto del objeto puede variar.
+                                        const seen = new Map();
+                                        [...baseObj.subpacks, ...addObj.subpacks].forEach(sp => {
+                                            const key = sp && sp.folder_name ? sp.folder_name : JSON.stringify(sp);
+                                            if (!seen.has(key)) seen.set(key, sp);
+                                        });
+                                        baseObj.subpacks = Array.from(seen.values());
+                                    }
+                                    
+                                    writeIndexed(finalDestPath, stringifyContent(baseObj));
+                                } catch(e) {
+                                    console.warn(`[inyectarAddon] No se pudo fusionar manifest ${finalDestPath}:`, e);
+                                    renames.conflicts.push({ path: finalDestPath, reason: 'manifest_merge_failed' });
+                                }
+                            } else {
+                                const content = await zipEntry.async("uint8array");
+                                writeIndexed(finalDestPath, content);
                             }
+                            continue; 
+                        }
+
+                        // --- SCRIPTS .js : NUNCA concatenar texto. Renombrar + inyectar import. ---
+                        // Concatenar dos ES Modules rompe los `import` (que deben ir al
+                        // tope del archivo) y produce SyntaxError al cargar, dejando los
+                        // scripts del addon sin ejecutarse.
+                        if (isScriptFile(finalDestPath) && existingFile) {
+                            const newPath = addPathSuffix(finalDestPath, '__addn');
+                            const content = await zipEntry.async("uint8array");
+                            writeIndexed(newPath, content);
+                            renames.scripts.push({ originalPath: finalDestPath, newPath });
+                            continue;
                         }
                         
-                        if (!destPath) continue; 
-                        if (destPath.toLowerCase().endsWith('manifest.json')) continue; 
+                        // --- UI JSON : decisión por namespace ---
+                        // Si los namespaces coinciden, deep-merge es seguro (mismo módulo).
+                        // Si difieren, SEPARAR archivos y registrar para parchear _ui_defs.json,
+                        // así los dos namespaces sobreviven y todas las referencias @ns.* siguen resolviendo.
+                        if (isUiJson(finalDestPath) && existingFile) {
+                            try {
+                                const baseStr = await existingFile.async("string");
+                                const addStr = await zipEntry.async("string");
+                                const baseObj = parseContent(baseStr, finalDestPath);
+                                const addObj = parseContent(addStr, fullPath);
+                                
+                                const baseNs = getUiNamespace(baseObj);
+                                const addNs = getUiNamespace(addObj);
+                                
+                                if (baseNs && addNs && baseNs !== addNs) {
+                                    // Namespaces distintos => separar archivos.
+                                    const newPath = addPathSuffix(finalDestPath, '__addn');
+                                    writeIndexed(newPath, addStr);
+                                    renames.uis.push({ originalPath: finalDestPath, newPath });
+                                } else {
+                                    // Mismo namespace (o ninguno): merge profundo seguro.
+                                    _.mergeWith(baseObj, addObj, smartMergeCustomizer);
+                                    writeIndexed(finalDestPath, stringifyContent(baseObj));
+                                }
+                            } catch (e) {
+                                console.warn(`[inyectarAddon] Error en UI ${finalDestPath}:`, e);
+                                const content = await zipEntry.async("uint8array");
+                                writeIndexed(finalDestPath, content);
+                                renames.conflicts.push({ path: finalDestPath, reason: 'ui_parse_failed' });
+                            }
+                            continue;
+                        }
                         
-                        const isJson = destPath.toLowerCase().endsWith('.json') || destPath.toLowerCase().endsWith('.lang');
-                        const existingFile = targetZip.file(destPath);
+                        // --- ANIMATIONS / ANIMATION_CONTROLLERS ---
+                        // El customizer ya protege transitions/on_entry/on_exit del dedupe.
+                        if (isAnimationJson(finalDestPath) && existingFile) {
+                            try {
+                                const baseStr = await existingFile.async("string");
+                                const addStr = await zipEntry.async("string");
+                                const baseObj = parseContent(baseStr, finalDestPath);
+                                const addObj = parseContent(addStr, fullPath);
+                                _.mergeWith(baseObj, addObj, smartMergeCustomizer);
+                                writeIndexed(finalDestPath, stringifyContent(baseObj));
+                            } catch (e) {
+                                console.warn(`[inyectarAddon] Error en animation ${finalDestPath}:`, e);
+                                const content = await zipEntry.async("uint8array");
+                                writeIndexed(finalDestPath, content);
+                                renames.conflicts.push({ path: finalDestPath, reason: 'anim_parse_failed' });
+                            }
+                            continue;
+                        }
+                        
+                        // --- JSON / .lang genéricos ---
+                        const isJson = finalDestPath.toLowerCase().endsWith('.json') || finalDestPath.toLowerCase().endsWith('.lang');
                         
                         if (isJson && existingFile) {
                             try {
                                 const baseStr = await existingFile.async("string");
                                 const addStr = await zipEntry.async("string");
-                                const baseObj = parseContent(baseStr, destPath);
+                                const baseObj = parseContent(baseStr, finalDestPath);
                                 const addObj = parseContent(addStr, fullPath);
-                                
                                 _.mergeWith(baseObj, addObj, smartMergeCustomizer);
-                                targetZip.file(destPath, stringifyContent(baseObj));
+                                writeIndexed(finalDestPath, stringifyContent(baseObj));
                             } catch (e) {
+                                console.warn(`[inyectarAddon] Error en JSON ${finalDestPath}:`, e);
                                 const content = await zipEntry.async("uint8array");
-                                targetZip.file(destPath, content);
+                                writeIndexed(finalDestPath, content);
+                                renames.conflicts.push({ path: finalDestPath, reason: 'json_parse_failed' });
                             }
                         } else {
                             const content = await zipEntry.async("uint8array");
-                            targetZip.file(destPath, content);
+                            writeIndexed(finalDestPath, content);
+                        }
+                    }
+                } finally {
+                    // Solo el llamador raíz ejecuta el post-procesado.
+                    if (isRootCall) {
+                        try {
+                            if (renames.uis.length)     await patchUiDefs(targetZip, renames.uis);
+                            if (renames.scripts.length) await injectScriptImports(targetZip, renames.scripts);
+                        } finally {
+                            // Exponemos el reporte vía propiedad para mostrar resumen al usuario.
+                            inyectarAddon._lastReport = renames;
+                            inyectarAddon._renames = null;
+                            inyectarAddon._lowerIndex = null;
                         }
                     }
                 }
             }
 
+            // =============================================================
+            // POST-PROCESADO TRAS inyectarAddon
+            // =============================================================
+
+            // Añade las nuevas rutas de UI renombradas al _ui_defs.json del pack
+            // para que Bedrock cargue ambos namespaces (base + adicional).
+            async function patchUiDefs(targetZip, renamedUis) {
+                for (const path in targetZip.files) {
+                    if (!path.toLowerCase().endsWith('_ui_defs.json')) continue;
+                    const file = targetZip.files[path];
+                    if (!file || file.dir) continue;
+                    try {
+                        const obj = parseContent(await file.async("string"), path);
+                        if (!Array.isArray(obj.ui_defs)) obj.ui_defs = [];
+                        
+                        // _ui_defs.json suele estar en <packRoot>ui/_ui_defs.json y las
+                        // rutas dentro son relativas al pack root (ej "ui/foo.json").
+                        const m = path.match(/^(.*?)ui\/_ui_defs\.json$/i);
+                        if (!m) continue;
+                        const packRoot = m[1];
+
+                        renamedUis.forEach(({ newPath }) => {
+                            if (newPath.toLowerCase().startsWith(packRoot.toLowerCase())) {
+                                const rel = newPath.substring(packRoot.length);
+                                if (!obj.ui_defs.includes(rel)) obj.ui_defs.push(rel);
+                            }
+                        });
+
+                        targetZip.file(path, stringifyContent(obj));
+                    } catch (e) {
+                        console.warn("No se pudo parchear _ui_defs.json:", path, e);
+                    }
+                }
+            }
+
+            // Inyecta `import "./<addn>.js";` al tope del script base que entró
+            // en colisión, para que el adicional se ejecute también como módulo.
+            // Asunción razonable: el script base colisionado es (o lo importa)
+            // la entry del manifest. Caso edge documentado en el README.
+            async function injectScriptImports(targetZip, renamedScripts) {
+                for (const { originalPath, newPath } of renamedScripts) {
+                    const base = targetZip.file(originalPath);
+                    if (!base) continue;
+                    try {
+                        const baseStr = await base.async("string");
+                        const baseDir = originalPath.substring(0, originalPath.lastIndexOf('/') + 1);
+                        const relImport = newPath.startsWith(baseDir)
+                            ? './' + newPath.substring(baseDir.length)
+                            : newPath;
+                        
+                        // Imports al tope: válidos en ES Modules.
+                        const prepended =
+                            `import "${relImport}";\n` +
+                            `/* --- Inyección automática de script adicional fusionado --- */\n` +
+                            baseStr;
+                        targetZip.file(originalPath, prepended);
+                    } catch (e) {
+                        console.warn("No se pudo inyectar import en:", originalPath, e);
+                    }
+                }
+            }
+
+            let isFullMergeInProgress = false;
+
             btnExecuteFullMerge.addEventListener('click', async () => {
+                if (isFullMergeInProgress) {
+                    showNotification("Ya hay una fusión en curso, espera a que termine.", "warning");
+                    return;
+                }
                 if (!fullMergeState.base.zip || !fullMergeState.additional.zip) return;
 
+                isFullMergeInProgress = true;
                 btnExecuteFullMerge.textContent = "⏳ Procesando en segundo plano... (No cierres la pestaña)";
                 btnExecuteFullMerge.style.pointerEvents = "none";
                 showNotification("Extrayendo, fusionando y comprimiendo...", "info");
@@ -1800,11 +2273,11 @@
                                 nuevoRpUuid = generarUUID();
                                 rpObj.header.uuid = nuevoRpUuid;
                                 
-                                if (rpObj.modules && Array.isArray(rpObj.modules)) {
+                                if (Array.isArray(rpObj.modules)) {
                                     rpObj.modules.forEach(mod => mod.uuid = generarUUID());
                                 }
                                 finalZip.file(rpManifestPath, stringifyContent(rpObj));
-                            } catch(e) { console.warn("No se pudo actualizar UUID del RP"); }
+                            } catch(e) { console.warn("No se pudo actualizar UUID del RP:", e); }
                         }
                     }
 
@@ -1819,15 +2292,15 @@
                                 if (!bpObj.header) bpObj.header = {}; 
                                 bpObj.header.uuid = generarUUID();
                                 
-                                if (bpObj.modules && Array.isArray(bpObj.modules)) {
+                                if (Array.isArray(bpObj.modules)) {
                                     bpObj.modules.forEach(mod => mod.uuid = generarUUID());
                                 }
                                 
                                 if (viejoRpUuid && nuevoRpUuid) {
-                                    if (!bpObj.dependencies) bpObj.dependencies = [];
+                                    if (!Array.isArray(bpObj.dependencies)) bpObj.dependencies = [];
                                     let depFound = false;
                                     bpObj.dependencies.forEach(dep => {
-                                        if (dep.uuid === viejoRpUuid) {
+                                        if (dep && dep.uuid === viejoRpUuid) {
                                             dep.uuid = nuevoRpUuid;
                                             depFound = true;
                                         }
@@ -1840,7 +2313,7 @@
                                     }
                                 }
                                 finalZip.file(bpManifestPath, stringifyContent(bpObj));
-                            } catch(e) { console.warn("No se pudo actualizar UUID del BP"); }
+                            } catch(e) { console.warn("No se pudo actualizar UUID del BP:", e); }
                         }
                     }
 
@@ -1862,13 +2335,32 @@
                     a.download = exportName;
                     a.click();
                     
-                    URL.revokeObjectURL(url);
-                    showNotification("¡Fusión Completada y Descargada con Éxito!", "success");
+                    // Retraso del revoke: algunos navegadores cancelan la descarga si
+                    // se revoca el ObjectURL inmediatamente tras .click().
+                    setTimeout(() => URL.revokeObjectURL(url), 1500);
+
+                    // Reporte de la fusión: cuántos archivos se renombraron y cuántos
+                    // dieron problemas. Útil para diagnosticar Addons complejos.
+                    const report = inyectarAddon._lastReport || { uis: [], scripts: [], conflicts: [] };
+                    let summary = "¡Fusión Completada!";
+                    const parts = [];
+                    if (report.uis.length)       parts.push(`${report.uis.length} UI(s) separadas por namespace`);
+                    if (report.scripts.length)   parts.push(`${report.scripts.length} script(s) renombrados`);
+                    if (report.conflicts.length) parts.push(`${report.conflicts.length} conflicto(s) (ver consola)`);
+                    if (parts.length) summary += " — " + parts.join(", ");
+                    showNotification(summary, report.conflicts.length ? "warning" : "success");
+
+                    if (report.conflicts.length) {
+                        console.group("[Resumen de fusión] Conflictos detectados:");
+                        report.conflicts.forEach(c => console.log(`• ${c.path} → ${c.reason}`));
+                        console.groupEnd();
+                    }
 
                 } catch (error) {
                     console.error("Error crítico durante la fusión:", error);
                     showNotification("Ha ocurrido un error durante la fusión.", "error");
                 } finally {
+                    isFullMergeInProgress = false;
                     btnExecuteFullMerge.textContent = "🚀 Iniciar Fusión de Addons";
                     btnExecuteFullMerge.style.pointerEvents = "auto";
                 }
