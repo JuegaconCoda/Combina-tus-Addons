@@ -1406,6 +1406,14 @@
             }
 
             clearSelectionsBtn.addEventListener('click', clearSelections);
+            
+            // Listener para que el toggle redibuje dinámicamente el resultado
+            resultSwitch.addEventListener('change', () => {
+                if (mergedResult.data && originalForComparison) {
+                    showFinalResult();
+                }
+            });
+
             function clearSelections() {
                 pairing.pairs.forEach(p => {
                     p.sourceElement.classList.remove('paired', 'active');
@@ -1536,6 +1544,8 @@
             }
 
             function showFinalResult() {
+                // Evitamos saltos de scroll molestos si el panel ya estaba visible
+                const isFirstShow = (resultsSection.style.display === 'none' || resultsSection.style.display === '');
                 resultsSection.style.display = 'block';
                 
                 if (baseArchiveFile && Object.keys(addonModifications).length > 0) {
@@ -1546,17 +1556,38 @@
                     exportZipBtn.style.display = 'none';
                 }
 
+                const isNonJson = mergedResult.data && (mergedResult.data._isLang || mergedResult.data._isJs);
+
                 if (resultSwitch.checked) {
                     finalResultContent.innerHTML = renderHighlightedJson(mergedResult.data, mergedResult.changes);
                 } else {
-                    finalResultContent.innerHTML = escapeHtml(stringifyContent(originalForComparison));
+                    let plainText = escapeHtml(stringifyContent(originalForComparison));
+                    
+                    // Inyectamos el indicador visual si es JS o Lang y el switch está APAGADO
+                    if (isNonJson) {
+                        const prefix = mergedResult.data._isJs ? "/* --- VISTA: BASE ORIGINAL --- */\n\n" : "## --- VISTA: BASE ORIGINAL ---\n\n";
+                        plainText = `<span style="color: var(--text-tertiary); font-weight: bold;">${prefix}</span>${plainText}`;
+                    }
+                    
+                    finalResultContent.innerHTML = plainText;
                 }
-                resultsSection.scrollIntoView({ behavior: 'smooth' });
+                
+                // Solo hacemos autoscroll la primera vez que se abre el panel
+                if (isFirstShow) {
+                    resultsSection.scrollIntoView({ behavior: 'smooth' });
+                }
             }
 
             function renderHighlightedJson(obj, changes) {
                 if (!obj) return '';
-                if (obj._isLang || obj._isJs) return escapeHtml(stringifyContent(obj)); 
+                
+                // Si es JS o Lang, devolvemos texto plano limpio SIN fondo amarillo.
+                if (obj._isLang || obj._isJs) {
+                    const prefix = obj._isJs ? "/* --- VISTA: COMBINADO --- */\n\n" : "## --- VISTA: COMBINADO ---\n\n";
+                    // Utilizamos un color de texto verde (--border-success) para indicar éxito/combinado, 
+                    // pero el fondo se mantendrá oscuro e igual de legible que la vista original.
+                    return `<span style="color: var(--border-success); font-weight: bold;">${prefix}</span>${escapeHtml(stringifyContent(obj))}`;
+                }
                 
                 let lines = JSON.stringify(obj, null, 2).split('\n');
                 const linesToHighlight = new Set();
